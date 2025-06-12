@@ -12,133 +12,27 @@ const fs = require("fs");
 const basicAuth = require("express-basic-auth");
 
 const { GptService } = require("./services/gpt-service");
-const { StreamService } = require("./services/stream-service"); //
+const { StreamService } = require("./services/stream-service");
 const { TranscriptionService } = require("./services/transcription-service");
 const { TextToSpeechService } = require("./services/tts-service");
 const { recordingService } = require("./services/recording-service");
-const { makeOutboundCall } = require("./scripts/outbound-call-api"); // Vamos criar este arquivo a seguir
+const { makeOutboundCall } = require("./scripts/outbound-call-api");
 
 const VoiceResponse = require("twilio").twiml.VoiceResponse;
 
 // --- App Setup ---
 const app = express();
 ExpressWs(app);
-const PORT = process.env.PORT || 3000; //
+const PORT = process.env.PORT || 3000;
 
 // --- Middleware ---
-// Parse JSON bodies for API requests
+// Parse JSON bodies for API requests - This should come early
 app.use(express.json());
 
-// --- Basic Authentication ---
-// IMPORTANT: Set YOUR_USERNAME and YOUR_PASSWORD in your .env file
-const users = {};
-const user = process.env.DASHBOARD_USERNAME || "admin";
-const password = process.env.DASHBOARD_PASSWORD || "password";
-users[user] = password;
+// ==================================================================
+// == PUBLIC ROUTES (FOR TWILIO) - NO AUTHENTICATION NEEDED ==
+// ==================================================================
 
-const unauthResponse = (req) => {
-  return req.auth
-    ? `Credentials ${req.auth.user}:${req.auth.password} rejected`
-    : "No credentials provided";
-};
-
-const authMiddleware = basicAuth({
-  users,
-  challenge: true, // Shows a login prompt in the browser
-  unauthorizedResponse: unauthResponse,
-});
-
-// --- API Endpoints for Dashboard ---
-app.post("/api/dial", authMiddleware, async (req, res) => {
-  console.log("[API-DIAL] Request received.".blue);
-  const { number } = req.body;
-
-  if (!number) {
-    console.error(
-      "[API-DIAL] Error: Phone number is missing in the request body.".red
-    );
-    return res.status(400).json({ message: "Phone number is required" });
-  }
-
-  // Log the variables being used to make sure they are loaded correctly
-  console.log("[API-DIAL] Attempting call with the following config:".yellow);
-  console.log(`[API-DIAL] -> To: ${number}`);
-  console.log(`[API-DIAL] -> From: ${process.env.FROM_NUMBER}`);
-  console.log(
-    `[API-DIAL] -> Server URL for Twilio Webhook: https://${process.env.SERVER}/incoming`
-  );
-
-  // Check for missing ENV VARS
-  if (
-    !process.env.FROM_NUMBER ||
-    !process.env.SERVER ||
-    !process.env.TWILIO_ACCOUNT_SID ||
-    !process.env.TWILIO_AUTH_TOKEN
-  ) {
-    console.error(
-      "[API-DIAL] CRITICAL: One or more required environment variables for Twilio are missing."
-        .red
-    );
-    return res
-      .status(500)
-      .json({
-        message:
-          "Server configuration error. Check Twilio environment variables.",
-      });
-  }
-
-  try {
-    const callSid = await makeOutboundCall(number);
-    console.log(
-      `[API-DIAL] Call initiated successfully. SID: ${callSid}`.green
-    );
-    res.status(200).json({ message: "Call initiated successfully", callSid });
-  } catch (error) {
-    // This block will catch errors from makeOutboundCall
-    console.error(
-      "[API-DIAL] CRITICAL: Caught an error while making the outbound call:"
-        .red,
-      error
-    );
-    res
-      .status(500)
-      .json({ message: "Failed to initiate call.", error: error.message });
-  }
-});
-
-app.get("/api/prompt", authMiddleware, (req, res) => {
-  try {
-    const promptConfig = JSON.parse(fs.readFileSync("prompt.json", "utf-8"));
-    res.status(200).json(promptConfig);
-  } catch (error) {
-    console.error("Error reading prompt file:", error);
-    res.status(500).send("Could not load prompt.");
-  }
-});
-
-app.post("/api/prompt", authMiddleware, (req, res) => {
-  const { system_prompt, assistant_prompt } = req.body;
-  if (!system_prompt || !assistant_prompt) {
-    return res
-      .status(400)
-      .send("Both system_prompt and assistant_prompt are required.");
-  }
-
-  try {
-    const promptConfig = { system_prompt, assistant_prompt };
-    fs.writeFileSync("prompt.json", JSON.stringify(promptConfig, null, 2));
-    res.status(200).send("Prompt updated successfully.");
-  } catch (error) {
-    console.error("Error writing prompt file:", error);
-    res.status(500).send("Failed to update prompt.");
-  }
-});
-
-// --- Static Files for Dashboard ---
-// Serve the public directory under authentication
-app.use("/", authMiddleware, express.static(path.join(__dirname, "public")));
-
-// --- Twilio WebHook for Incoming Calls ---
 app.post("/incoming", (req, res) => {
   try {
     const response = new VoiceResponse();
@@ -148,13 +42,12 @@ app.post("/incoming", (req, res) => {
     res.type("text/xml");
     res.end(response.toString());
   } catch (err) {
-    console.log(err);
+    console.log("Error in /incoming webhook:".red, err);
+    res.status(500).send("Internal Server Error");
   }
 });
 
-// --- Twilio Media Stream WebSocket Connection ---
 app.ws("/connection", (ws) => {
-  //
   try {
     ws.on("error", console.error);
     // Filled in from start message
@@ -175,16 +68,12 @@ app.ws("/connection", (ws) => {
       if (msg.event === "start") {
         streamSid = msg.start.streamSid;
         callSid = msg.start.callSid;
-
         streamService.setStreamSid(streamSid);
         gptService.setCallSid(callSid);
-
-        // Set RECORDING_ENABLED='true' in .env to record calls
         recordingService(ttsService, callSid).then(() => {
           console.log(
             `Twilio -> Starting Media Stream for ${streamSid}`.underline.red
           );
-          // Use the initial greeting from GptService
           ttsService.generate(gptService.getInitialGreeting(), 0);
         });
       } else if (msg.event === "media") {
@@ -201,7 +90,6 @@ app.ws("/connection", (ws) => {
     });
 
     transcriptionService.on("utterance", async (text) => {
-      // Log interim transcripts from Deepgram
       console.log(`[STT-INTERIM] ${text}`);
       if (marks.length > 0 && text?.length > 5) {
         console.log("Twilio -> Interruption, Clearing stream".red);
@@ -210,10 +98,7 @@ app.ws("/connection", (ws) => {
     });
 
     transcriptionService.on("transcription", async (text) => {
-      //
-      if (!text) {
-        return;
-      }
+      if (!text) return;
       console.log(
         `Interaction ${interactionCount} – STT -> GPT: ${text}`.yellow
       );
@@ -222,7 +107,6 @@ app.ws("/connection", (ws) => {
     });
 
     gptService.on("gptreply", async (gptReply, icount) => {
-      //
       console.log(
         `Interaction ${icount}: GPT -> TTS: ${gptReply.partialResponse}`.green
       );
@@ -230,14 +114,11 @@ app.ws("/connection", (ws) => {
     });
 
     ttsService.on("speech", (responseIndex, audio, label, icount) => {
-      //
       console.log(`Interaction ${icount}: TTS -> TWILIO: ${label}`.blue);
-
       streamService.buffer(responseIndex, audio);
     });
 
     streamService.on("audiosent", (markLabel) => {
-      //
       marks.push(markLabel);
     });
   } catch (err) {
@@ -245,12 +126,108 @@ app.ws("/connection", (ws) => {
   }
 });
 
+// ==================================================================
+// == PRIVATE ROUTES (FOR DASHBOARD) - AUTHENTICATION REQUIRED ==
+// ==================================================================
+
+// --- Basic Authentication Setup ---
+const users = {};
+const user = process.env.DASHBOARD_USERNAME || "admin";
+const password = process.env.DASHBOARD_PASSWORD || "password";
+users[user] = password;
+
+const authMiddleware = basicAuth({
+  users,
+  challenge: true,
+  unauthorizedResponse: (req) =>
+    req.auth
+      ? `Credentials for ${req.auth.user} rejected`
+      : "No credentials provided",
+});
+
+// Apply authentication to all routes defined after this point
+app.use(authMiddleware);
+
+// --- Authenticated API Endpoints ---
+app.post("/api/dial", async (req, res) => {
+  // ... (código do /api/dial que já funcionava, não precisa mudar)
+  console.log("[API-DIAL] Request received.".blue);
+  const { number } = req.body;
+  if (!number) {
+    console.error(
+      "[API-DIAL] Error: Phone number is missing in the request body.".red
+    );
+    return res.status(400).json({ message: "Phone number is required" });
+  }
+  if (
+    !process.env.FROM_NUMBER ||
+    !process.env.SERVER ||
+    !process.env.TWILIO_ACCOUNT_SID ||
+    !process.env.TWILIO_AUTH_TOKEN
+  ) {
+    console.error(
+      "[API-DIAL] CRITICAL: One or more required environment variables for Twilio are missing."
+        .red
+    );
+    return res
+      .status(500)
+      .json({
+        message:
+          "Server configuration error. Check Twilio environment variables.",
+      });
+  }
+  try {
+    const callSid = await makeOutboundCall(number);
+    console.log(
+      `[API-DIAL] Call initiated successfully. SID: ${callSid}`.green
+    );
+    res.status(200).json({ message: "Call initiated successfully", callSid });
+  } catch (error) {
+    console.error(
+      "[API-DIAL] CRITICAL: Caught an error while making the outbound call:"
+        .red,
+      error
+    );
+    res
+      .status(500)
+      .json({ message: "Failed to initiate call.", error: error.message });
+  }
+});
+
+app.get("/api/prompt", (req, res) => {
+  try {
+    const promptConfig = JSON.parse(fs.readFileSync("prompt.json", "utf-8"));
+    res.status(200).json(promptConfig);
+  } catch (error) {
+    console.error("Error reading prompt file:", error);
+    res.status(500).send("Could not load prompt.");
+  }
+});
+
+app.post("/api/prompt", (req, res) => {
+  const { system_prompt, assistant_prompt } = req.body;
+  if (!system_prompt || !assistant_prompt) {
+    return res
+      .status(400)
+      .send("Both system_prompt and assistant_prompt are required.");
+  }
+  try {
+    const promptConfig = { system_prompt, assistant_prompt };
+    fs.writeFileSync("prompt.json", JSON.stringify(promptConfig, null, 2));
+    res.status(200).send("Prompt updated successfully.");
+  } catch (error) {
+    console.error("Error writing prompt file:", error);
+    res.status(500).send("Failed to update prompt.");
+  }
+});
+
+// --- Authenticated Static Files for Dashboard ---
+app.use("/", express.static(path.join(__dirname, "public")));
+
 // --- Server Start ---
 app.listen(PORT, () => {
   console.log(`Server and dashboard running on port ${PORT}`.cyan);
   const promptFilePath = path.join(__dirname, "prompt.json");
-
-  // Check if prompt.json exists, if not, create it with default values
   if (!fs.existsSync(promptFilePath)) {
     console.log("Creating default prompt.json file...".yellow);
     const defaultPrompts = {
