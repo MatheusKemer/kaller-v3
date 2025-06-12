@@ -56,14 +56,15 @@ class TranscriptionService extends EventEmitter {
       console.log("[STT] Deepgram connection opened.".green);
     });
 
-    this.dgConnection.on(
-      LiveTranscriptionEvents.Transcript,
-      (transcriptionEvent) => {
-        const alternatives = transcriptionEvent.channel?.alternatives;
-        const text =
-          alternatives && alternatives[0]?.transcript
-            ? alternatives[0].transcript
-            : "";
+    this.dgConnection.on(LiveTranscriptionEvents.Transcript, (transcriptionEvent) => {
+      const alternatives = transcriptionEvent.channel?.alternatives;
+      const text = alternatives && alternatives[0]?.transcript
+        ? alternatives[0].transcript
+        : "";
+      // Log every Deepgram transcription event for debugging (interim and final)
+      console.log(
+        `[STT] Deepgram event type=${transcriptionEvent.type} is_final=${transcriptionEvent.is_final} speech_final=${transcriptionEvent.speech_final} transcript="${text}"`
+      );
 
         // The 'UtteranceEnd' event signals that Deepgram has detected the end of a segment of speech.
         // We use it as a fallback in case the stream ends without a `speech_final` event.

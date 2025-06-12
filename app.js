@@ -47,6 +47,8 @@ app.ws("/connection", (ws) => {
 
     // Incoming from MediaStream
     ws.on("message", function message(data) {
+      // Log raw Twilio media stream messages for debugging
+      console.log(`[TWILIO STREAM] ${data}`);
       const msg = JSON.parse(data);
       if (msg.event === "start") {
         streamSid = msg.start.streamSid;
@@ -83,14 +85,13 @@ app.ws("/connection", (ws) => {
     });
 
     transcriptionService.on("utterance", async (text) => {
-      // This is a bit of a hack to filter out empty utterances
+      // Log interim transcripts from Deepgram
+      console.log(`[STT-INTERIM] ${text}`);
+      // This is a bit of a hack to filter out empty utterances and handle interruptions
       if (marks.length > 0 && text?.length > 5) {
         console.log("Twilio -> Interruption, Clearing stream".red);
         ws.send(
-          JSON.stringify({
-            streamSid,
-            event: "clear",
-          })
+          JSON.stringify({ streamSid, event: "clear" })
         );
       }
     });
