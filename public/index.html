@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kaller AI - Control Panel</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        margin: 40px;
+        background-color: #f7f7f7;
+        color: #333;
+      }
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        background: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1,
+      h2 {
+        color: #1a1a1a;
+      }
+      label {
+        display: block;
+        margin-top: 15px;
+        font-weight: bold;
+      }
+      textarea,
+      input[type="text"] {
+        width: 98%;
+        padding: 10px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+        font-size: 1em;
+        margin-top: 5px;
+      }
+      textarea {
+        height: 200px;
+        resize: vertical;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        padding: 12px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 1.1em;
+        margin-top: 20px;
+        transition: background-color 0.3s;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .status {
+        margin-top: 20px;
+        padding: 10px;
+        border-radius: 4px;
+        display: none;
+      }
+      .success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+      .error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Kaller AI - Painel de Controle</h1>
+
+      <form id="control-form">
+        <h2>Fazer uma Chamada</h2>
+        <label for="number">Número de Telefone para Discar:</label>
+        <input
+          type="text"
+          id="number"
+          name="number"
+          placeholder="+55119XXXXXXXX"
+          required
+        />
+
+        <hr style="margin: 30px 0" />
+
+        <h2>Configuração do Prompt da IA</h2>
+        <label for="system-prompt"
+          >Prompt do Sistema (Personalidade e Instruções):</label
+        >
+        <textarea id="system-prompt" name="system_prompt" required></textarea>
+
+        <label for="assistant-prompt"
+          >Primeira Fala do Assistente (Saudação Inicial):</label
+        >
+        <input
+          type="text"
+          id="assistant-prompt"
+          name="assistant_prompt"
+          required
+        />
+
+        <button type="submit" id="submit-button">Salvar Prompt e Discar</button>
+      </form>
+
+      <div id="status-message" class="status"></div>
+    </div>
+
+    <script>
+      const form = document.getElementById("control-form");
+      const numberInput = document.getElementById("number");
+      const systemPromptText = document.getElementById("system-prompt");
+      const assistantPromptText = document.getElementById("assistant-prompt");
+      const submitButton = document.getElementById("submit-button");
+      const statusMessage = document.getElementById("status-message");
+
+      // Load current prompt when page loads
+      window.addEventListener("load", async () => {
+        try {
+          const response = await fetch("/api/prompt");
+          if (!response.ok) throw new Error("Failed to load prompt.");
+
+          const data = await response.json();
+          systemPromptText.value = data.system_prompt;
+          assistantPromptText.value = data.assistant_prompt;
+        } catch (error) {
+          showStatus(error.message, true);
+        }
+      });
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        setLoading(true);
+
+        // 1. Save the prompt
+        try {
+          const promptData = {
+            system_prompt: systemPromptText.value,
+            assistant_prompt: assistantPromptText.value,
+          };
+
+          const promptResponse = await fetch("/api/prompt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(promptData),
+          });
+
+          if (!promptResponse.ok) throw new Error("Falha ao salvar o prompt.");
+
+          showStatus("Prompt salvo com sucesso! Discando...", false);
+        } catch (error) {
+          showStatus(error.message, true);
+          setLoading(false);
+          return;
+        }
+
+        // 2. Make the call
+        try {
+          const callData = {
+            number: numberInput.value,
+          };
+
+          const callResponse = await fetch("/api/dial", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(callData),
+          });
+
+          const result = await callResponse.json();
+          if (!callResponse.ok)
+            throw new Error(result.message || "Falha ao iniciar a chamada.");
+
+          showStatus(
+            `Chamada para ${numberInput.value} iniciada com sucesso! SID: ${result.callSid}`,
+            false
+          );
+        } catch (error) {
+          showStatus(error.message, true);
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      function setLoading(isLoading) {
+        submitButton.disabled = isLoading;
+        submitButton.textContent = isLoading
+          ? "Processando..."
+          : "Salvar Prompt e Discar";
+      }
+
+      function showStatus(message, isError = false) {
+        statusMessage.textContent = message;
+        statusMessage.className = `status ${isError ? "error" : "success"}`;
+        statusMessage.style.display = "block";
+      }
+    </script>
+  </body>
+</html>

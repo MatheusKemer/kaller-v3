@@ -1,10 +1,14 @@
+// FILE: services/gpt-service.js
+// DESCRIPTION: Manages interaction with OpenAI GPT, now with dynamic prompts from a file.
+
 require("colors");
 const EventEmitter = require("events");
 const OpenAI = require("openai");
+const fs = require("fs");
+const path = require("path");
 const tools = require("../functions/function-manifest");
 
 // Import all functions included in function manifest
-// Note: the function name and file name must be the same
 const availableFunctions = {};
 tools.forEach((tool) => {
   let functionName = tool.function.name;
@@ -15,19 +19,65 @@ class GptService extends EventEmitter {
   constructor() {
     super();
     this.openai = new OpenAI();
-    (this.userContext = [
-      {
-        role: "system",
-        content:
-          "Você é um representante de vendas outbound que vende AirPods da Apple. Você tem uma personalidade jovem e alegre. Mantenha suas respostas o mais breve possível, mas faça todo o possível para manter o interlocutor ao telefone sem ser rude. Não faça mais de uma pergunta por vez. Não faça suposições sobre quais valores inserir nas funções. Peça esclarecimentos se a solicitação de um usuário for ambígua. Fale todos os preços, incluindo a moeda. Ajude-os a decidir entre os AirPods, AirPods Pro e AirPods Max, fazendo perguntas como 'Você prefere fones de ouvido intra-auriculares ou sobre a orelha?'. Se eles estiverem tentando escolher entre os AirPods e os AirPods Pro, tente perguntar se eles precisam de cancelamento de ruído. Depois de saber qual modelo eles gostariam, pergunte quantos eles gostariam de comprar e tente fazê-los fazer um pedido. Você deve adicionar um símbolo '•' a cada 5 a 10 palavras em pausas naturais, onde sua resposta pode ser dividida para conversão de texto em fala.",
-      },
-      {
-        role: "assistant",
-        content:
-          "Olá! Entendo que você está procurando um par de AirPods, correto?",
-      },
-    ]),
-      (this.partialResponseIndex = 0);
+    this.userContext = this.loadPromptFromFile();
+    this.partialResponseIndex = 0;
+  }
+
+  /**
+   * Loads the system and assistant prompts from the prompt.json file.
+   * @returns {Array<Object>} The initial user context array.
+   */
+  loadPromptFromFile() {
+    try {
+      const promptPath = path.join(__dirname, "..", "prompt.json");
+      const promptData = JSON.parse(fs.readFileSync(promptPath, "utf-8"));
+
+      console.log("[GPT] Loaded prompt from prompt.json".cyan);
+
+      return [
+        {
+          role: "system",
+          content: promptData.system_prompt,
+        },
+        {
+          role: "assistant",
+          content: promptData.assistant_prompt,
+        },
+      ];
+    } catch (error) {
+      console.error(
+        "Error loading prompt.json, using default fallback.".red,
+        error
+      );
+      // Fallback to a default prompt if the file doesn't exist or is invalid
+      return [
+        {
+          role: "system",
+          content: "You are a helpful assistant.",
+        },
+        {
+          role: "assistant",
+          content: "Hello! How can I help you today?",
+        },
+      ];
+    }
+  }
+
+  /**
+   * Returns the initial greeting message for TTS service.
+   * @returns {{partialResponseIndex: null, partialResponse: string}}
+   */
+  getInitialGreeting() {
+    // Find the assistant's first message from the context
+    const initialAssistantMessage = this.userContext.find(
+      (m) => m.role === "assistant"
+    );
+    return {
+      partialResponseIndex: null,
+      partialResponse: initialAssistantMessage
+        ? initialAssistantMessage.content
+        : "Hello.",
+    };
   }
 
   // Add the callSid to the chat context in case
@@ -66,7 +116,7 @@ class GptService extends EventEmitter {
 
     // Step 1: Send user transcription to Chat GPT
     const stream = await this.openai.chat.completions.create({
-      model: "gpt-4.1-nano",
+      model: "gpt-4-1106-preview", // Consider using a more recent model if available
       messages: this.userContext,
       tools: tools,
       stream: true,
@@ -80,11 +130,11 @@ class GptService extends EventEmitter {
 
     function collectToolInformation(deltas) {
       let name = deltas.tool_calls[0]?.function?.name || "";
-      if (name != "") {
+      if (name) {
         functionName = name;
       }
       let args = deltas.tool_calls[0]?.function?.arguments || "";
-      if (args != "") {
+      if (args) {
         // args are streamed as JSON string so we need to concatenate all chunks
         functionArgs += args;
       }
@@ -103,13 +153,9 @@ class GptService extends EventEmitter {
 
       // need to call function on behalf of Chat GPT with the arguments it parsed from the conversation
       if (finishReason === "tool_calls") {
-        // parse JSON string of args into JSON object
-
         const functionToCall = availableFunctions[functionName];
         const validatedArgs = this.validateFunctionArgs(functionArgs);
 
-        // Say a pre-configured message from the function manifest
-        // before running the function.
         const toolData = tools.find(
           (tool) => tool.function.name === functionName
         );
@@ -123,13 +169,11 @@ class GptService extends EventEmitter {
           },
           interactionCount
         );
-
         let functionResponse = await functionToCall(validatedArgs);
 
         // Step 4: send the info on the function call and function response to GPT
         this.updateUserContext(functionName, "function", functionResponse);
 
-        // call the completion function again but pass in the function response to have OpenAI generate a new assistant response
         await this.completion(
           functionResponse,
           interactionCount,
@@ -147,7 +191,6 @@ class GptService extends EventEmitter {
             partialResponseIndex: this.partialResponseIndex,
             partialResponse,
           };
-
           this.emit("gptreply", gptReply, interactionCount);
           this.partialResponseIndex++;
           partialResponse = "";

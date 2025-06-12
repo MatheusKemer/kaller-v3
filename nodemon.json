@@ -1,0 +1,7 @@
+{
+  "watch": ["*.js", "functions/", "services/", "scripts/"],
+  "ext": "js, cjs, mjs",
+  "ignore": ["*.test.js", "node_modules/", "public/", "prompt.json"],
+  "verbose": true,
+  "exec": "node app.js"
+}
